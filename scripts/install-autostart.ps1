@@ -29,9 +29,9 @@ Get-Process -Name "YoutubeBulkUploader.Web" -ErrorAction SilentlyContinue | Stop
 Start-Sleep -Seconds 1
 
 Write-Host "Publishing to $InstallDir ..."
-dotnet publish $Project -c Release -r win-x64 --self-contained true `
-    -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
-    -o $InstallDir
+# NOTE: deliberately NOT using -p:PublishSingleFile=true - no benefit here (wwwroot
+# ships as loose files regardless) and it adds startup-extraction overhead for nothing.
+dotnet publish $Project -c Release -r win-x64 --self-contained true -o $InstallDir
 
 if (-not (Test-Path $ExePath)) {
     throw "Publish did not produce $ExePath"
@@ -42,7 +42,7 @@ Write-Host "Writing supervisor loop ..."
 # Restarts YoutubeBulkUploader.Web.exe automatically if it ever exits/crashes.
 `$exe = Join-Path `$PSScriptRoot "YoutubeBulkUploader.Web.exe"
 while (`$true) {
-    `$proc = Start-Process -FilePath `$exe -WindowStyle Hidden -PassThru
+    `$proc = Start-Process -FilePath `$exe -WorkingDirectory `$PSScriptRoot -WindowStyle Hidden -PassThru
     `$proc.WaitForExit()
     Start-Sleep -Seconds 5
 }

@@ -4,7 +4,15 @@ using YoutubeBulkUploader.Web.Data;
 using YoutubeBulkUploader.Web.Models;
 using YoutubeBulkUploader.Web.Services;
 
-var builder = WebApplication.CreateBuilder(args);
+// Explicit ContentRootPath: when launched via the Startup-folder autostart chain
+// (vbs -> powershell -> exe) the process's current working directory isn't the app's
+// own folder, which breaks wwwroot/appsettings resolution. Anchoring to the exe's own
+// directory makes this work regardless of how/where the app is launched from.
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+{
+    Args = args,
+    ContentRootPath = AppContext.BaseDirectory
+});
 
 // Fixed ports regardless of how the app is launched (dotnet run, or the published
 // standalone exe for autostart), so the OAuth redirect URI registered in Google Cloud
@@ -55,7 +63,12 @@ app.UseHttpsRedirection();
 
 app.UseAntiforgery();
 
-app.MapStaticAssets();
+// UseStaticFiles instead of MapStaticAssets: MapStaticAssets has a tracked upstream bug
+// (dotnet/aspnetcore#66833, #63570, #58940) where published (non-dev-server) apps serve
+// fingerprinted static files as HTTP 200 with an empty body. UseStaticFiles is the
+// documented workaround and works identically for our purposes (see also App.razor and
+// ReconnectModal.razor, which reference plain paths instead of the @Assets[] helper).
+app.UseStaticFiles();
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 
