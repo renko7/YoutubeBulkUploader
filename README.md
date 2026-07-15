@@ -53,6 +53,25 @@ dotnet run --project src/YoutubeBulkUploader.Web
 Open the printed `https://localhost:...` URL, go to **Setup** to connect your account, then
 **Upload Queue** to point it at a folder and start uploading.
 
+## Running automatically (no manual start needed)
+
+`scripts\install-autostart.ps1` publishes the app as a standalone exe and sets it up to start
+invisibly whenever you log into Windows, restarting itself if it ever stops:
+
+```
+powershell -ExecutionPolicy Bypass -File .\scripts\install-autostart.ps1
+```
+
+It always listens on `https://localhost:7080` — just open that URL any time, no need to start
+anything yourself. Re-run the script after pulling new code to update the running version.
+
+This uses the Startup folder (`shell:startup`) rather than Task Scheduler, since some machines'
+policies block non-admin users from registering new scheduled tasks. To remove autostart:
+
+```
+powershell -ExecutionPolicy Bypass -File .\scripts\uninstall-autostart.ps1
+```
+
 ## Configuration
 
 `src/YoutubeBulkUploader.Web/appsettings.json`:

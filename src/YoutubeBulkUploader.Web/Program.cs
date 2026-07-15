@@ -6,6 +6,11 @@ using YoutubeBulkUploader.Web.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Fixed ports regardless of how the app is launched (dotnet run, or the published
+// standalone exe for autostart), so the OAuth redirect URI registered in Google Cloud
+// Console (https://localhost:7080/oauth/callback) always matches.
+builder.WebHost.UseUrls("https://localhost:7080", "http://localhost:5196");
+
 var dataDirectory = Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
     "YoutubeBulkUploader");
