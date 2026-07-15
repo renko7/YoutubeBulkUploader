@@ -1,0 +1,22 @@
+## .NET
+bin/
+obj/
+*.user
+
+## Rider/VS
+.vs/
+.idea/
+*.suo
+
+## App data / secrets - never commit these
+**/App_Data/
+*.db
+*.db-shm
+*.db-wal
+appsettings.*.local.json
+oauth-tokens/
+client_secret*.json
+
+## OS
+.DS_Store
+Thumbs.db

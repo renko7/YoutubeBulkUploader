@@ -1,0 +1,217 @@
+@page "/queue"
+@rendermode InteractiveServer
+@implements IDisposable
+@inject UploadQueueManager QueueManager
+@inject GoogleAuthService AuthService
+
+<PageTitle>Upload Queue</PageTitle>
+
+<h1>Upload Queue</h1>
+
+@if (string.IsNullOrEmpty(_connectedChannelTitle))
+{
+    <div class="alert alert-warning">
+        No Google account connected yet. Go to <a href="/setup">Setup</a> first.
+    </div>
+}
+else
+{
+    <p class="text-muted">Connected as: <strong>@_connectedChannelTitle</strong></p>
+}
+
+<div class="card mb-3">
+    <div class="card-body">
+        @if (_rateStatus is not null)
+        {
+            <p>
+                <strong>@_rateStatus.UsedInWindow / @_rateStatus.Limit</strong> uploads used in the current rolling 24-hour window.
+                @if (_rateStatus.IsCapped && _rateStatus.NextSlotAtUtc is { } nextSlot)
+                {
+                    <span class="text-danger">
+                        Limit reached &mdash; next slot opens at @nextSlot.ToLocalTime().ToString("g")
+                        (in @FormatCountdown(nextSlot))
+                    </span>
+                }
+            </p>
+        }
+        <button class="btn @(_isPaused ? "btn-success" : "btn-outline-secondary")" @onclick="ToggleQueue">
+            @(_isPaused ? "Start Queue" : "Pause Queue")
+        </button>
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <label class="form-label">Folder path to scan for videos</label>
+        <div class="input-group">
+            <input class="form-control" @bind="_folderPath" @bind:event="oninput" placeholder="C:\Videos\ToUpload" />
+            <button class="btn btn-primary" @onclick="ScanFolderAsync">Scan Folder</button>
+        </div>
+        @if (_scanMessage is not null)
+        {
+            <div class="form-text">@_scanMessage</div>
+        }
+    </div>
+</div>
+
+<table class="table table-striped align-middle">
+    <thead>
+        <tr>
+            <th>File</th>
+            <th>Title</th>
+            <th>Privacy</th>
+            <th>Status</th>
+            <th>Progress</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var job in _jobs)
+        {
+            <tr>
+                <td title="@job.FilePath">@Path.GetFileName(job.FilePath)</td>
+                <td>@job.Title</td>
+                <td>@job.Privacy</td>
+                <td>
+                    <span class="badge @StatusBadgeClass(job.Status)">@job.Status</span>
+                    @if (job.Status == UploadStatus.Failed && job.ErrorMessage is not null)
+                    {
+                        <div class="small text-danger">@job.ErrorMessage</div>
+                    }
+                    @if (job.Status == UploadStatus.Completed && job.YouTubeVideoId is not null)
+                    {
+                        <div class="small">
+                            <a href="https://youtube.com/watch?v=@job.YouTubeVideoId" target="_blank" rel="noopener">View on YouTube</a>
+                        </div>
+                    }
+                </td>
+                <td style="min-width:120px;">
+                    @if (job.Status == UploadStatus.Uploading)
+                    {
+                        <div class="progress" style="height:6px;">
+                            <div class="progress-bar" style="width:@(job.ProgressPercent.ToString("F0"))%"></div>
+                        </div>
+                    }
+                </td>
+                <td>
+                    @if (job.Status == UploadStatus.Queued)
+                    {
+                        <button class="btn btn-sm btn-outline-danger" @onclick="() => RemoveJobAsync(job.Id)">Remove</button>
+                    }
+                    @if (job.Status == UploadStatus.Failed)
+                    {
+                        <button class="btn btn-sm btn-outline-secondary" @onclick="() => RetryJobAsync(job.Id)">Retry</button>
+                    }
+                </td>
+            </tr>
+        }
+        @if (_jobs.Count == 0)
+        {
+            <tr><td colspan="6" class="text-muted">Queue is empty. Scan a folder above to add videos.</td></tr>
+        }
+    </tbody>
+</table>
+
+@code {
+    private List<UploadJob> _jobs = [];
+    private RateLimitStatus? _rateStatus;
+    private bool _isPaused = true;
+    private string _folderPath = string.Empty;
+    private string? _scanMessage;
+    private string? _connectedChannelTitle;
+    private Timer? _refreshTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        QueueManager.OnChanged += HandleChanged;
+        _refreshTimer = new Timer(_ => InvokeAsync(RefreshAsync), null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+        _connectedChannelTitle = await AuthService.GetConnectedChannelTitleAsync();
+        await RefreshAsync();
+    }
+
+    private async Task RefreshAsync()
+    {
+        _jobs = await QueueManager.GetSnapshotAsync();
+        _rateStatus = await QueueManager.GetRateLimitStatusAsync();
+        _isPaused = QueueManager.IsPaused;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void HandleChanged() => _ = InvokeAsync(RefreshAsync);
+
+    private async Task ScanFolderAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_folderPath))
+        {
+            _scanMessage = "Enter a folder path first.";
+            return;
+        }
+
+        try
+        {
+            var added = await QueueManager.ScanFolderAsync(_folderPath.Trim());
+            _scanMessage = added switch
+            {
+                0 => "No new video files found in that folder.",
+                1 => "Added 1 video to the queue.",
+                _ => $"Added {added} videos to the queue."
+            };
+        }
+        catch (DirectoryNotFoundException)
+        {
+            _scanMessage = "That folder doesn't exist.";
+        }
+
+        await RefreshAsync();
+    }
+
+    private async Task RemoveJobAsync(int id)
+    {
+        await QueueManager.RemoveJobAsync(id);
+    }
+
+    private async Task RetryJobAsync(int id)
+    {
+        await QueueManager.RetryJobAsync(id);
+    }
+
+    private void ToggleQueue()
+    {
+        if (_isPaused)
+        {
+            QueueManager.Resume();
+        }
+        else
+        {
+            QueueManager.Pause();
+        }
+    }
+
+    private static string StatusBadgeClass(UploadStatus status) => status switch
+    {
+        UploadStatus.Queued => "bg-secondary",
+        UploadStatus.Uploading => "bg-primary",
+        UploadStatus.Completed => "bg-success",
+        UploadStatus.Failed => "bg-danger",
+        _ => "bg-secondary"
+    };
+
+    private static string FormatCountdown(DateTime targetUtc)
+    {
+        var remaining = targetUtc - DateTime.UtcNow;
+        if (remaining <= TimeSpan.Zero)
+        {
+            return "now";
+        }
+
+        return remaining.TotalHours >= 1
+            ? $"{(int)remaining.TotalHours}h {remaining.Minutes}m"
+            : $"{remaining.Minutes}m {remaining.Seconds}s";
+    }
+
+    public void Dispose()
+    {
+        QueueManager.OnChanged -= HandleChanged;
+        _refreshTimer?.Dispose();
+    }
+}

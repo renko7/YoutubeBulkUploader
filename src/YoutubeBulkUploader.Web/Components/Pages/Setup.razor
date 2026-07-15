@@ -1,0 +1,134 @@
+@page "/setup"
+@rendermode InteractiveServer
+@inject GoogleAuthService AuthService
+@inject NavigationManager Nav
+
+<PageTitle>Setup</PageTitle>
+
+<h1>Setup</h1>
+
+@if (!string.IsNullOrEmpty(_errorMessage))
+{
+    <div class="alert alert-danger">@_errorMessage</div>
+}
+@if (_justConnected)
+{
+    <div class="alert alert-success">Connected successfully.</div>
+}
+
+<h2>1. Create a Google Cloud OAuth client</h2>
+<p>This is a one-time setup so the app can upload to <strong>your</strong> YouTube channel on your behalf.</p>
+<ol>
+    <li>Go to <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener">Google Cloud Console &rarr; New Project</a> and create a project (any name).</li>
+    <li>
+        In that project, open
+        <a href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noopener">APIs &amp; Services &rarr; Library &rarr; YouTube Data API v3</a>
+        and click <strong>Enable</strong>.
+    </li>
+    <li>
+        Open <a href="https://console.cloud.google.com/auth/overview" target="_blank" rel="noopener">APIs &amp; Services &rarr; OAuth consent screen</a>.
+        Choose <strong>External</strong>, fill in the required app name/support email, and under
+        <strong>Audience &rarr; Test users</strong> add your own Google account email so you're allowed to authorize the app
+        while it's unpublished.
+    </li>
+    <li>
+        Open <a href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener">APIs &amp; Services &rarr; Credentials &rarr; Create Credentials &rarr; OAuth client ID</a>.
+        Application type: <strong>Web application</strong>.
+        Under <strong>Authorized redirect URIs</strong>, add exactly:
+        <pre>@_redirectUri</pre>
+    </li>
+    <li>After creating it, copy the <strong>Client ID</strong> and <strong>Client secret</strong> and paste them below.</li>
+</ol>
+
+<h2>2. Save your client credentials</h2>
+<EditForm Model="_clientForm" OnValidSubmit="SaveClientConfigAsync" FormName="ClientConfigForm">
+    <div class="mb-3">
+        <label class="form-label">Client ID</label>
+        <InputText class="form-control" @bind-Value="_clientForm.ClientId" placeholder="xxxxxxxx.apps.googleusercontent.com" />
+    </div>
+    <div class="mb-3">
+        <label class="form-label">Client Secret</label>
+        <InputText class="form-control" type="password" @bind-Value="_clientForm.ClientSecret" placeholder="GOCSPX-..." />
+    </div>
+    <button type="submit" class="btn btn-primary" disabled="@_saving">Save credentials</button>
+</EditForm>
+
+@if (_clientConfigSaved)
+{
+    <h2 class="mt-4">3. Connect your Google account</h2>
+    @if (!string.IsNullOrEmpty(_connectedChannelTitle))
+    {
+        <p class="text-success">Connected as: <strong>@_connectedChannelTitle</strong></p>
+        <button class="btn btn-outline-secondary" @onclick="DisconnectAsync">Disconnect</button>
+    }
+    else
+    {
+        <p>Click below, sign in with the Google account for your channel, and approve access.</p>
+        <button class="btn btn-primary" @onclick="ConnectAsync">Connect Google Account</button>
+    }
+}
+
+@code {
+    private readonly ClientForm _clientForm = new();
+    private bool _saving;
+    private bool _clientConfigSaved;
+    private string? _connectedChannelTitle;
+    private string? _errorMessage;
+    private bool _justConnected;
+    private string _redirectUri = string.Empty;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _redirectUri = $"{Nav.BaseUri.TrimEnd('/')}/oauth/callback";
+
+        var query = new Uri(Nav.Uri).Query;
+        var parsed = System.Web.HttpUtility.ParseQueryString(query);
+        _errorMessage = parsed["error"] switch
+        {
+            null => null,
+            "missing_code" => "Google did not return an authorization code. Please try connecting again.",
+            "exchange_failed" => "Failed to exchange the authorization code for a token. Please try again.",
+            var e => $"Google sign-in error: {e}"
+        };
+        _justConnected = parsed["connected"] == "1";
+
+        var existing = await AuthService.GetClientConfigAsync();
+        if (existing is not null)
+        {
+            _clientForm.ClientId = existing.Value.ClientId;
+            _clientForm.ClientSecret = existing.Value.ClientSecret;
+            _clientConfigSaved = true;
+        }
+
+        _connectedChannelTitle = await AuthService.GetConnectedChannelTitleAsync();
+    }
+
+    private async Task SaveClientConfigAsync()
+    {
+        _saving = true;
+        await AuthService.SaveClientConfigAsync(_clientForm.ClientId.Trim(), _clientForm.ClientSecret.Trim());
+        _clientConfigSaved = true;
+        _saving = false;
+    }
+
+    private async Task ConnectAsync()
+    {
+        var url = await AuthService.BuildConsentUrlAsync(_redirectUri);
+        if (url is not null)
+        {
+            Nav.NavigateTo(url, forceLoad: true);
+        }
+    }
+
+    private async Task DisconnectAsync()
+    {
+        await AuthService.DisconnectAsync();
+        _connectedChannelTitle = null;
+    }
+
+    private class ClientForm
+    {
+        public string ClientId { get; set; } = string.Empty;
+        public string ClientSecret { get; set; } = string.Empty;
+    }
+}
