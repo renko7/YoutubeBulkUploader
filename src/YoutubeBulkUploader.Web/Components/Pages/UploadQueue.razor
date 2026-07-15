@@ -3,6 +3,7 @@
 @implements IDisposable
 @inject UploadQueueManager QueueManager
 @inject GoogleAuthService AuthService
+@inject PlaylistService PlaylistService
 
 <PageTitle>Upload Queue</PageTitle>
 
@@ -51,17 +52,58 @@ else
         {
             <div class="form-text">@_scanMessage</div>
         }
+        <div class="form-text">
+            Tip: if a filename starts with a number (e.g. "01 - Intro.mp4"), that number is used as its
+            playlist order automatically. Otherwise you can set the order manually below.
+        </div>
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <label class="form-label">Assign selected videos (@_selectedJobIds.Count) to a playlist</label>
+        <div class="d-flex gap-2 align-items-start flex-wrap">
+            <select class="form-select" style="max-width:280px" @bind="_selectedPlaylistOption">
+                <option value="">-- choose a playlist --</option>
+                <option value="__new__">+ Create new playlist</option>
+                @foreach (var playlist in _playlists)
+                {
+                    <option value="@playlist.Id">@playlist.Title</option>
+                }
+            </select>
+
+            @if (_selectedPlaylistOption == "__new__")
+            {
+                <input class="form-control" style="max-width:220px" @bind="_newPlaylistTitle" @bind:event="oninput" placeholder="New playlist name" />
+                <select class="form-select" style="max-width:140px" @bind="_newPlaylistPrivacy">
+                    <option value="@VideoPrivacy.Private">Private</option>
+                    <option value="@VideoPrivacy.Unlisted">Unlisted</option>
+                    <option value="@VideoPrivacy.Public">Public</option>
+                </select>
+            }
+
+            <button class="btn btn-primary" disabled="@(!CanAssignPlaylist())" @onclick="AssignSelectedToPlaylistAsync">
+                Assign Selected to Playlist
+            </button>
+        </div>
+        @if (_playlistAssignMessage is not null)
+        {
+            <div class="form-text">@_playlistAssignMessage</div>
+        }
     </div>
 </div>
 
 <table class="table table-striped align-middle">
     <thead>
         <tr>
+            <th><input type="checkbox" checked="@AllVisibleSelected()" @onchange="e => ToggleSelectAll((bool)e.Value!)" /></th>
             <th>File</th>
             <th>Title</th>
             <th>Privacy</th>
             <th>Status</th>
             <th>Progress</th>
+            <th>Playlist</th>
+            <th>Order</th>
             <th></th>
         </tr>
     </thead>
@@ -69,6 +111,7 @@ else
         @foreach (var job in _jobs)
         {
             <tr>
+                <td><input type="checkbox" checked="@_selectedJobIds.Contains(job.Id)" @onchange="e => ToggleSelection(job.Id, (bool)e.Value!)" /></td>
                 <td title="@job.FilePath">@Path.GetFileName(job.FilePath)</td>
                 <td>@job.Title</td>
                 <td>@job.Privacy</td>
@@ -94,6 +137,32 @@ else
                     }
                 </td>
                 <td>
+                    @if (job.PlaylistId is not null)
+                    {
+                        <div>@job.PlaylistTitle</div>
+                        @if (job.PlaylistError is not null)
+                        {
+                            <span class="badge bg-danger" title="@job.PlaylistError">Error</span>
+                        }
+                        else if (job.PlaylistItemId is not null)
+                        {
+                            <span class="badge bg-success">Added</span>
+                        }
+                        else
+                        {
+                            <span class="badge bg-secondary">Pending</span>
+                        }
+                    }
+                    else
+                    {
+                        <span class="text-muted">-</span>
+                    }
+                </td>
+                <td style="width:90px;">
+                    <input type="number" class="form-control form-control-sm" value="@job.PlaylistOrder"
+                           @onchange="e => OnOrderChangedAsync(job.Id, e.Value)" />
+                </td>
+                <td>
                     @if (job.Status == UploadStatus.Queued)
                     {
                         <button class="btn btn-sm btn-outline-danger" @onclick="() => RemoveJobAsync(job.Id)">Remove</button>
@@ -107,7 +176,7 @@ else
         }
         @if (_jobs.Count == 0)
         {
-            <tr><td colspan="6" class="text-muted">Queue is empty. Scan a folder above to add videos.</td></tr>
+            <tr><td colspan="9" class="text-muted">Queue is empty. Scan a folder above to add videos.</td></tr>
         }
     </tbody>
 </table>
@@ -121,12 +190,20 @@ else
     private string? _connectedChannelTitle;
     private Timer? _refreshTimer;
 
+    private List<PlaylistSummary> _playlists = [];
+    private readonly HashSet<int> _selectedJobIds = [];
+    private string _selectedPlaylistOption = string.Empty;
+    private string _newPlaylistTitle = string.Empty;
+    private VideoPrivacy _newPlaylistPrivacy = VideoPrivacy.Private;
+    private string? _playlistAssignMessage;
+
     protected override async Task OnInitializedAsync()
     {
         QueueManager.OnChanged += HandleChanged;
         _refreshTimer = new Timer(_ => InvokeAsync(RefreshAsync), null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
         _connectedChannelTitle = await AuthService.GetConnectedChannelTitleAsync();
         await RefreshAsync();
+        await LoadPlaylistsAsync();
     }
 
     private async Task RefreshAsync()
@@ -135,6 +212,25 @@ else
         _rateStatus = await QueueManager.GetRateLimitStatusAsync();
         _isPaused = QueueManager.IsPaused;
         await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task LoadPlaylistsAsync()
+    {
+        var credential = await AuthService.GetCredentialAsync();
+        if (credential is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _playlists = await PlaylistService.GetPlaylistsAsync(credential);
+            await InvokeAsync(StateHasChanged);
+        }
+        catch
+        {
+            // Best-effort; the assign toolbar will just show no existing playlists.
+        }
     }
 
     private void HandleChanged() => _ = InvokeAsync(RefreshAsync);
@@ -185,6 +281,93 @@ else
         {
             QueueManager.Pause();
         }
+    }
+
+    private void ToggleSelection(int jobId, bool isChecked)
+    {
+        if (isChecked)
+        {
+            _selectedJobIds.Add(jobId);
+        }
+        else
+        {
+            _selectedJobIds.Remove(jobId);
+        }
+    }
+
+    private bool AllVisibleSelected() => _jobs.Count > 0 && _jobs.All(j => _selectedJobIds.Contains(j.Id));
+
+    private void ToggleSelectAll(bool isChecked)
+    {
+        if (isChecked)
+        {
+            foreach (var job in _jobs)
+            {
+                _selectedJobIds.Add(job.Id);
+            }
+        }
+        else
+        {
+            _selectedJobIds.Clear();
+        }
+    }
+
+    private bool CanAssignPlaylist()
+    {
+        if (_selectedJobIds.Count == 0 || string.IsNullOrEmpty(_selectedPlaylistOption))
+        {
+            return false;
+        }
+
+        return _selectedPlaylistOption != "__new__" || !string.IsNullOrWhiteSpace(_newPlaylistTitle);
+    }
+
+    private async Task AssignSelectedToPlaylistAsync()
+    {
+        var credential = await AuthService.GetCredentialAsync();
+        if (credential is null)
+        {
+            _playlistAssignMessage = "Connect your Google account first.";
+            return;
+        }
+
+        try
+        {
+            string playlistId;
+            string playlistTitle;
+
+            if (_selectedPlaylistOption == "__new__")
+            {
+                var created = await PlaylistService.CreatePlaylistAsync(credential, _newPlaylistTitle.Trim(), _newPlaylistPrivacy);
+                playlistId = created.Id;
+                playlistTitle = created.Title;
+                _playlists.Add(created);
+            }
+            else
+            {
+                var existing = _playlists.First(p => p.Id == _selectedPlaylistOption);
+                playlistId = existing.Id;
+                playlistTitle = existing.Title;
+            }
+
+            await QueueManager.AssignPlaylistAsync(_selectedJobIds, playlistId, playlistTitle);
+            _playlistAssignMessage = $"Assigned {_selectedJobIds.Count} video(s) to \"{playlistTitle}\".";
+            _selectedJobIds.Clear();
+            _newPlaylistTitle = string.Empty;
+            _selectedPlaylistOption = string.Empty;
+        }
+        catch (Exception ex)
+        {
+            _playlistAssignMessage = $"Couldn't assign playlist: {ex.Message}";
+        }
+
+        await RefreshAsync();
+    }
+
+    private async Task OnOrderChangedAsync(int jobId, object? value)
+    {
+        var order = int.TryParse(value?.ToString(), out var parsed) ? parsed : (int?)null;
+        await QueueManager.SetPlaylistOrderAsync(jobId, order);
     }
 
     private static string StatusBadgeClass(UploadStatus status) => status switch

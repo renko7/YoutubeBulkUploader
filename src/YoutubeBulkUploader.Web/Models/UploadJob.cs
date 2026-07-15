@@ -40,4 +40,14 @@ public class UploadJob
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 
     public DateTime? CompletedAtUtc { get; set; }
+
+    public string? PlaylistId { get; set; }
+
+    public string? PlaylistTitle { get; set; }
+
+    public int? PlaylistOrder { get; set; }
+
+    public string? PlaylistItemId { get; set; }
+
+    public string? PlaylistError { get; set; }
 }

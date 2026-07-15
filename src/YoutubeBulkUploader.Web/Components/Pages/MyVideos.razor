@@ -1,0 +1,207 @@
+@page "/videos"
+@rendermode InteractiveServer
+@using Google.Apis.YouTube.v3.Data
+@inject GoogleAuthService AuthService
+@inject ChannelVideoService ChannelVideoService
+
+<PageTitle>My Videos</PageTitle>
+
+<h1>My Videos</h1>
+
+<p class="text-muted">
+    Bulk-change the visibility of any video on your connected channel &mdash; not just ones
+    uploaded through this app.
+</p>
+
+@if (string.IsNullOrEmpty(_connectedChannelTitle))
+{
+    <div class="alert alert-warning">
+        No Google account connected yet. Go to <a href="/setup">Setup</a> first.
+    </div>
+}
+else
+{
+    <p class="text-muted">Connected as: <strong>@_connectedChannelTitle</strong></p>
+
+    <button class="btn btn-primary mb-3" disabled="@_loading" @onclick="LoadVideosAsync">
+        @(_loading ? "Loading..." : "Load My Videos")
+    </button>
+
+    @if (_loadError is not null)
+    {
+        <div class="alert alert-danger">@_loadError</div>
+    }
+
+    @if (_videos.Count > 0)
+    {
+        <div class="card mb-3">
+            <div class="card-body d-flex gap-2 align-items-center flex-wrap">
+                <span>@_selectedVideoIds.Count selected</span>
+                <select class="form-select" style="max-width:160px" @bind="_targetPrivacy">
+                    <option value="@VideoPrivacy.Private">Private</option>
+                    <option value="@VideoPrivacy.Unlisted">Unlisted</option>
+                    <option value="@VideoPrivacy.Public">Public</option>
+                </select>
+                <button class="btn btn-primary" disabled="@(_selectedVideoIds.Count == 0 || _applying)" @onclick="ApplyVisibilityAsync">
+                    @(_applying ? "Applying..." : $"Apply to Selected ({_selectedVideoIds.Count})")
+                </button>
+            </div>
+            @if (_applyMessage is not null)
+            {
+                <div class="card-body pt-0 form-text">@_applyMessage</div>
+            }
+        </div>
+
+        <table class="table table-striped align-middle">
+            <thead>
+                <tr>
+                    <th><input type="checkbox" checked="@AllSelected()" @onchange="e => ToggleSelectAll((bool)e.Value!)" /></th>
+                    <th>Title</th>
+                    <th>Privacy</th>
+                    <th>Published</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var video in _videos)
+                {
+                    <tr>
+                        <td><input type="checkbox" checked="@_selectedVideoIds.Contains(video.Id)" @onchange="e => ToggleSelection(video.Id, (bool)e.Value!)" /></td>
+                        <td>@video.Snippet?.Title</td>
+                        <td>@video.Status?.PrivacyStatus</td>
+                        <td>@video.Snippet?.PublishedAtDateTimeOffset?.LocalDateTime.ToString("g")</td>
+                        <td>
+                            @if (_errors.TryGetValue(video.Id, out var error))
+                            {
+                                <span class="text-danger small" title="@error">Failed</span>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+    else if (!_loading && _hasLoadedOnce)
+    {
+        <p class="text-muted">No videos found on this channel.</p>
+    }
+}
+
+@code {
+    private string? _connectedChannelTitle;
+    private List<Video> _videos = [];
+    private readonly HashSet<string> _selectedVideoIds = [];
+    private readonly Dictionary<string, string> _errors = [];
+    private bool _loading;
+    private bool _applying;
+    private bool _hasLoadedOnce;
+    private string? _loadError;
+    private string? _applyMessage;
+    private VideoPrivacy _targetPrivacy = VideoPrivacy.Private;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _connectedChannelTitle = await AuthService.GetConnectedChannelTitleAsync();
+    }
+
+    private async Task LoadVideosAsync()
+    {
+        _loading = true;
+        _loadError = null;
+        StateHasChanged();
+
+        try
+        {
+            var credential = await AuthService.GetCredentialAsync();
+            if (credential is null)
+            {
+                _loadError = "Connect your Google account first.";
+                return;
+            }
+
+            _videos = await ChannelVideoService.GetAllChannelVideosAsync(credential);
+            _selectedVideoIds.Clear();
+            _errors.Clear();
+        }
+        catch (Exception ex)
+        {
+            _loadError = $"Couldn't load videos: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+            _hasLoadedOnce = true;
+        }
+    }
+
+    private void ToggleSelection(string videoId, bool isChecked)
+    {
+        if (isChecked)
+        {
+            _selectedVideoIds.Add(videoId);
+        }
+        else
+        {
+            _selectedVideoIds.Remove(videoId);
+        }
+    }
+
+    private bool AllSelected() => _videos.Count > 0 && _videos.All(v => _selectedVideoIds.Contains(v.Id));
+
+    private void ToggleSelectAll(bool isChecked)
+    {
+        if (isChecked)
+        {
+            foreach (var video in _videos)
+            {
+                _selectedVideoIds.Add(video.Id);
+            }
+        }
+        else
+        {
+            _selectedVideoIds.Clear();
+        }
+    }
+
+    private async Task ApplyVisibilityAsync()
+    {
+        var credential = await AuthService.GetCredentialAsync();
+        if (credential is null)
+        {
+            _applyMessage = "Connect your Google account first.";
+            return;
+        }
+
+        _applying = true;
+        _applyMessage = null;
+        StateHasChanged();
+
+        var targets = _videos.Where(v => _selectedVideoIds.Contains(v.Id)).ToList();
+        var results = await ChannelVideoService.UpdateVisibilityAsync(credential, targets, _targetPrivacy);
+
+        var succeeded = 0;
+        foreach (var result in results)
+        {
+            if (result.Success)
+            {
+                succeeded++;
+                _errors.Remove(result.VideoId);
+                var video = _videos.FirstOrDefault(v => v.Id == result.VideoId);
+                if (video?.Status is not null)
+                {
+                    video.Status.PrivacyStatus = _targetPrivacy.ToString().ToLowerInvariant();
+                }
+            }
+            else
+            {
+                _errors[result.VideoId] = result.Error ?? "Unknown error";
+            }
+        }
+
+        _applyMessage = succeeded == results.Count
+            ? $"Updated {succeeded} video(s) to {_targetPrivacy}."
+            : $"Updated {succeeded} of {results.Count} video(s); {results.Count - succeeded} failed (see Failed marker below).";
+
+        _applying = false;
+    }
+}

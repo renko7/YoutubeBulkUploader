@@ -21,10 +21,12 @@ public class GoogleAuthService(
 {
     public const string LocalUserId = "local-user";
 
+    // Full-management scope: covers video upload/update plus playlist creation and
+    // membership changes. Superset of YoutubeUpload/YoutubeReadonly used previously —
+    // existing connections must Disconnect and reconnect to pick up the wider grant.
     private static readonly string[] Scopes =
     [
-        YouTubeService.Scope.YoutubeUpload,
-        YouTubeService.Scope.YoutubeReadonly
+        YouTubeService.Scope.Youtube
     ];
 
     public async Task<(string ClientId, string ClientSecret)?> GetClientConfigAsync()

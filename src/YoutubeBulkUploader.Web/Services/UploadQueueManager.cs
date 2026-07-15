@@ -44,12 +44,14 @@ public class UploadQueueManager(IDbContextFactory<AppDbContext> dbContextFactory
                 continue;
             }
 
+            var fileNameWithoutExtension = Path.GetFileNameWithoutExtension(file);
             db.UploadJobs.Add(new UploadJob
             {
                 FilePath = file,
-                Title = Path.GetFileNameWithoutExtension(file),
+                Title = fileNameWithoutExtension,
                 Privacy = _settings.DefaultPrivacy,
-                Status = UploadStatus.Queued
+                Status = UploadStatus.Queued,
+                PlaylistOrder = PlaylistOrderParser.TryParseLeadingNumber(fileNameWithoutExtension)
             });
             added++;
         }
@@ -253,6 +255,97 @@ public class UploadQueueManager(IDbContextFactory<AppDbContext> dbContextFactory
         job.ErrorMessage = errorMessage;
         await db.SaveChangesAsync();
         NotifyChanged();
+    }
+
+    public async Task AssignPlaylistAsync(IEnumerable<int> jobIds, string playlistId, string playlistTitle)
+    {
+        await using var db = await dbContextFactory.CreateDbContextAsync();
+        var idSet = jobIds.ToHashSet();
+        var jobs = await db.UploadJobs.Where(j => idSet.Contains(j.Id)).ToListAsync();
+        if (jobs.Count == 0)
+        {
+            return;
+        }
+
+        var nextOrder = (await db.UploadJobs
+            .Where(j => j.PlaylistId == playlistId)
+            .Select(j => (int?)j.PlaylistOrder)
+            .MaxAsync()) ?? 0;
+
+        foreach (var job in jobs)
+        {
+            job.PlaylistId = playlistId;
+            job.PlaylistTitle = playlistTitle;
+            job.PlaylistItemId = null;
+            job.PlaylistError = null;
+            if (job.PlaylistOrder is null)
+            {
+                job.PlaylistOrder = ++nextOrder;
+            }
+        }
+
+        await db.SaveChangesAsync();
+        NotifyChanged();
+        Wake();
+    }
+
+    public async Task SetPlaylistOrderAsync(int jobId, int? order)
+    {
+        await using var db = await dbContextFactory.CreateDbContextAsync();
+        var job = await db.UploadJobs.FindAsync(jobId);
+        if (job is not null)
+        {
+            job.PlaylistOrder = order;
+            await db.SaveChangesAsync();
+            NotifyChanged();
+        }
+    }
+
+    public async Task<List<UploadJob>> GetPendingPlaylistAddsAsync()
+    {
+        await using var db = await dbContextFactory.CreateDbContextAsync();
+        return await db.UploadJobs
+            .Where(j => j.Status == UploadStatus.Completed
+                && j.PlaylistId != null
+                && j.PlaylistItemId == null
+                && j.PlaylistError == null)
+            .OrderBy(j => j.PlaylistOrder ?? int.MaxValue)
+            .ThenBy(j => j.CreatedAtUtc)
+            .AsNoTracking()
+            .ToListAsync();
+    }
+
+    public async Task<int> CountAddedBeforeOrderAsync(string playlistId, int? order)
+    {
+        await using var db = await dbContextFactory.CreateDbContextAsync();
+        return await db.UploadJobs.CountAsync(j =>
+            j.PlaylistId == playlistId
+            && j.PlaylistItemId != null
+            && (j.PlaylistOrder ?? int.MaxValue) < (order ?? int.MaxValue));
+    }
+
+    public async Task MarkPlaylistItemAddedAsync(int jobId, string playlistItemId)
+    {
+        await using var db = await dbContextFactory.CreateDbContextAsync();
+        var job = await db.UploadJobs.FindAsync(jobId);
+        if (job is not null)
+        {
+            job.PlaylistItemId = playlistItemId;
+            await db.SaveChangesAsync();
+            NotifyChanged();
+        }
+    }
+
+    public async Task MarkPlaylistErrorAsync(int jobId, string error)
+    {
+        await using var db = await dbContextFactory.CreateDbContextAsync();
+        var job = await db.UploadJobs.FindAsync(jobId);
+        if (job is not null)
+        {
+            job.PlaylistError = error;
+            await db.SaveChangesAsync();
+            NotifyChanged();
+        }
     }
 
     private void NotifyChanged() => OnChanged?.Invoke();

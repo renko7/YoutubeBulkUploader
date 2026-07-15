@@ -9,6 +9,7 @@ public class UploadBackgroundWorker(
     UploadQueueManager queueManager,
     GoogleAuthService authService,
     YouTubeUploadService uploadService,
+    PlaylistService playlistService,
     ILogger<UploadBackgroundWorker> logger) : BackgroundService
 {
     private static readonly TimeSpan IdlePoll = TimeSpan.FromSeconds(20);
@@ -32,6 +33,8 @@ public class UploadBackgroundWorker(
                     await queueManager.WaitForWakeAsync(IdlePoll, stoppingToken);
                     continue;
                 }
+
+                await ProcessPendingPlaylistAddsAsync(credential, stoppingToken);
 
                 var rateStatus = await queueManager.GetRateLimitStatusAsync();
                 if (rateStatus.IsCapped && rateStatus.NextSlotAtUtc is { } nextSlot)
@@ -78,6 +81,32 @@ public class UploadBackgroundWorker(
             {
                 logger.LogError(ex, "Unexpected error in upload worker loop");
                 await Task.Delay(IdlePoll, stoppingToken);
+            }
+        }
+    }
+
+    private async Task ProcessPendingPlaylistAddsAsync(
+        Google.Apis.Auth.OAuth2.UserCredential credential,
+        CancellationToken stoppingToken)
+    {
+        var pending = await queueManager.GetPendingPlaylistAddsAsync();
+        foreach (var job in pending)
+        {
+            if (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+
+            try
+            {
+                var position = await queueManager.CountAddedBeforeOrderAsync(job.PlaylistId!, job.PlaylistOrder);
+                var itemId = await playlistService.AddVideoToPlaylistAsync(credential, job.PlaylistId!, job.YouTubeVideoId!, position);
+                await queueManager.MarkPlaylistItemAddedAsync(job.Id, itemId);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Failed to add job {JobId} to playlist {PlaylistId}", job.Id, job.PlaylistId);
+                await queueManager.MarkPlaylistErrorAsync(job.Id, ex.Message);
             }
         }
     }

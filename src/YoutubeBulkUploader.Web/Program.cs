@@ -24,6 +24,8 @@ builder.Services.AddSingleton<SecretProtector>();
 builder.Services.AddSingleton<EfCoreDataStore>();
 builder.Services.AddSingleton<GoogleAuthService>();
 builder.Services.AddSingleton<YouTubeUploadService>();
+builder.Services.AddSingleton<PlaylistService>();
+builder.Services.AddSingleton<ChannelVideoService>();
 builder.Services.AddSingleton<UploadQueueManager>();
 builder.Services.AddHostedService<UploadBackgroundWorker>();
 

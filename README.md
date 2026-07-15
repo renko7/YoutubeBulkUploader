@@ -4,7 +4,13 @@ A local Blazor Web App (.NET 10, server-rendered) that bulk-uploads a folder of 
 YouTube via the YouTube Data API v3, automatically respecting YouTube's real-world upload
 limit of roughly **15 uploads per rolling 24 hours**. Point it at a folder, hit start, and it
 will keep uploading until it hits the cap, then wait and resume automatically — no need to
-babysit it.
+babysit it. It can also assign uploaded videos to a playlist in order, and bulk-change the
+visibility (Private/Unlisted/Public) of any video on your channel.
+
+> **Upgrading from an earlier version?** This version requests a wider Google OAuth scope
+> (needed for playlist management and full channel video access). Go to **Setup** and click
+> **Disconnect**, then **Connect Google Account** again — Google won't silently upgrade an
+> already-granted token's scope.
 
 ## How it works
 
@@ -59,10 +65,25 @@ Open the printed `https://localhost:...` URL, go to **Setup** to connect your ac
 ```
 src/YoutubeBulkUploader.Web/
   Components/Pages/Setup.razor       OAuth setup walkthrough + connect/disconnect
-  Components/Pages/UploadQueue.razor Folder scan, queue table, rate-limit status, start/pause
+  Components/Pages/UploadQueue.razor Folder scan, queue table, playlist assignment, rate-limit status, start/pause
+  Components/Pages/MyVideos.razor    Bulk visibility (Private/Unlisted/Public) changes for any channel video
   Services/GoogleAuthService.cs      OAuth2 web flow, token persistence
   Services/YouTubeUploadService.cs   Resumable video upload + progress reporting
-  Services/UploadQueueManager.cs     Queue state + rolling 24h rate-limit bookkeeping
-  Services/UploadBackgroundWorker.cs Background loop that drains the queue
+  Services/PlaylistService.cs        Playlist listing/creation, adding videos to a playlist at a position
+  Services/ChannelVideoService.cs    Full channel video listing + bulk privacy updates
+  Services/PlaylistOrderParser.cs    Parses a leading number out of a filename for playlist ordering
+  Services/UploadQueueManager.cs     Queue state + rolling 24h rate-limit bookkeeping + playlist assignment
+  Services/UploadBackgroundWorker.cs Background loop that drains the queue and pending playlist adds
   Data/AppDbContext.cs               EF Core / SQLite persistence
 ```
+
+## Playlist organization & mass visibility
+
+- On the **Upload Queue** page, select one or more queued/uploaded videos, pick an existing
+  playlist (or create a new one), and click **Assign Selected to Playlist**. If a filename
+  starts with a number (`01 - Intro.mp4`, `2. Chapter Two.mp4`), that number is used as the
+  playlist order automatically; otherwise edit the **Order** column yourself. Videos are added
+  to the playlist as each upload finishes (or immediately, if already uploaded), independent of
+  the 15/24h upload cap.
+- The **My Videos** page lists every video on your connected channel (not just ones uploaded
+  through this app) and lets you bulk-change their Private/Unlisted/Public status.
